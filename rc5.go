@@ -11,6 +11,8 @@ package rc5
 
 import (
 	"crypto/cipher"
+	"encoding/binary"
+	"math/bits"
 	"strconv"
 )
 
@@ -21,14 +23,6 @@ const (
 
 type rc5cipher struct {
 	rk [roundKeys]uint32
-}
-
-func rotl32(k uint32, rot uint32) uint32 {
-	return (k << rot) | (k >> (32 - rot))
-}
-
-func rotr32(k uint32, rot uint32) uint32 {
-	return (k >> rot) | (k << (32 - rot))
 }
 
 type KeySizeError int
@@ -49,7 +43,7 @@ func New(key []byte) (cipher.Block, error) {
 	var L [keyWords]uint32
 
 	for i := 0; i < keyWords; i++ {
-		L[i] = getUint32(key)
+		L[i] = binary.LittleEndian.Uint32(key[:4])
 		key = key[4:]
 	}
 
@@ -60,9 +54,9 @@ func New(key []byte) (cipher.Block, error) {
 	var i, j int
 
 	for k := 0; k < 3*roundKeys; k++ {
-		c.rk[i] = rotl32(c.rk[i]+(A+B), 3)
+		c.rk[i] = bits.RotateLeft32(c.rk[i]+(A+B), 3)
 		A = c.rk[i]
-		L[j] = rotl32(L[j]+(A+B), (A+B)&31)
+		L[j] = bits.RotateLeft32(L[j]+(A+B), int(A+B))
 		B = L[j]
 
 		i = (i + 1) % roundKeys
@@ -76,49 +70,36 @@ func (c *rc5cipher) BlockSize() int { return 8 }
 
 func (c *rc5cipher) Encrypt(dst, src []byte) {
 
-	A := getUint32(src) + c.rk[0]
-	B := getUint32(src[4:]) + c.rk[1]
+	A := binary.LittleEndian.Uint32(src[:4]) + c.rk[0]
+	B := binary.LittleEndian.Uint32(src[4:8]) + c.rk[1]
 
 	kidx := 2
 
 	for r := 0; r < rounds; r++ {
-		A = rotl32(A^B, B&31) + c.rk[kidx]
-		B = rotl32(B^A, A&31) + c.rk[kidx+1]
+		A = bits.RotateLeft32(A^B, int(B)) + c.rk[kidx]
+		B = bits.RotateLeft32(B^A, int(A)) + c.rk[kidx+1]
 		kidx += 2
 	}
 
-	putUint32(dst, A)
-	putUint32(dst[4:], B)
+	binary.LittleEndian.PutUint32(dst[:4], A)
+	binary.LittleEndian.PutUint32(dst[4:8], B)
 }
 
 func (c *rc5cipher) Decrypt(dst, src []byte) {
 
-	A := getUint32(src)
-	B := getUint32(src[4:])
+	A := binary.LittleEndian.Uint32(src[:4])
+	B := binary.LittleEndian.Uint32(src[4:8])
 
 	kidx := 2 * rounds
 
 	for r := 0; r < rounds; r++ {
-		B = rotr32(B-c.rk[kidx+1], A&31) ^ A
-		A = rotr32(A-c.rk[kidx], B&31) ^ B
+		B = bits.RotateLeft32(B-c.rk[kidx+1], -int(A)) ^ A
+		A = bits.RotateLeft32(A-c.rk[kidx], -int(B)) ^ B
 		kidx -= 2
 	}
 
-	putUint32(dst[4:], B-c.rk[1])
-	putUint32(dst, A-c.rk[0])
-}
-
-// avoid pulling in encoding/binary
-
-func getUint32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-}
-
-func putUint32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
+	binary.LittleEndian.PutUint32(dst[4:8], B-c.rk[1])
+	binary.LittleEndian.PutUint32(dst[:4], A-c.rk[0])
 }
 
 // skeytable computed from
